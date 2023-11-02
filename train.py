@@ -196,7 +196,7 @@ def sweep_train():
     for seed in range(10):
         for idx, depth in enumerate(range(1, 10)):
             for train_frac in np.linspace(0.1, 1.0, 10):
-                weights, metrics = optimise_model(
+                weights, df = optimise_model(
                     model,
                     criterion,
                     nstep=1000,
