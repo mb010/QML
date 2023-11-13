@@ -193,9 +193,9 @@ evaluation_metrics = {
 
 
 def sweep_train():
-    for seed in range(10):
+    for seed in range(0, 5):
         for idx, depth in enumerate(range(1, 10)):
-            for train_frac in np.linspace(0.1, 1.0, 10):
+            for train_frac in np.linspace(0.5, 1.0, 3, endpoint=True):
                 weights, df = optimise_model(
                     model,
                     criterion,
@@ -208,15 +208,15 @@ def sweep_train():
                     train_frac=train_frac,
                     evaluation_metrics=evaluation_metrics,
                 )
-            if idx == 0 and seed == 0:
-                df_all = df
-                sweep_weights = [weights]
-            else:
-                df_all = pd.concat([df_all, df])
-                sweep_weights.append(np.asarray(weights))
+                if idx == 0 and seed == 0:
+                    df_all = df
+                    sweep_weights = [weights]
+                else:
+                    df_all = pd.concat([df_all, df])
+                    sweep_weights.append(np.asarray(weights))
 
     df_all.to_csv(f"results/quam_sweep_metrics.csv")
-    np.save(f"results/quam_sweep_weights.npy", np.concat(weights_all))
+    np.save(f"results/quam_sweep_weights.npy", np.concatenate(sweep_weights, axis=0))
 
 
 def quick_train():
