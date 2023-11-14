@@ -4,88 +4,24 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-import pennylane as qml
-
 import jax
 import jax.numpy as jnp
 import optax
 
-import sklearn
-from sklearn import preprocessing
-from sklearn.model_selection import train_test_split
 
+import models.utils as model_utils
 
 jax.config.update("jax_enable_x64", True)
-SEED = 42
 
 
-def train_test_data(seed=None):
-    """Loads, formats and splits the pulsar data.
-
-    Returns:
-        X_train (np.ndarray): Training data.
-        X_test (np.ndarray): Testing data.
-        y_train (np.ndarray): Training labels.
-        y_test (np.ndarray): Testing labels.
-    """
-    df = pd.read_csv("pulsar.csv").dropna()
-    data = preprocessing.MinMaxScaler(feature_range=(0, np.pi)).fit_transform(df)
-    # data = jnp.array(data)
-    X = data[:, :-1]
-    y = df["class"].values
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=seed, shuffle=True, stratify=y
-    )
-    return X_train, X_test, y_train, y_test
-
-
-# Has to be defined in the file for the decorators to work.
-dev = qml.device("default.qubit.jax", wires=1)
-
-
-def input_prep():
-    """Data encoding circuit."""
-    qml.Hadamard(wires=0)
-
-
-def variational_circuit(weights, layer, feature_n, x=0):
-    """Variational circuit."""
-    qml.RZ(weights[layer][feature_n][0] + x, wires=0)
-    qml.RY(weights[layer][feature_n][1], wires=0)
-
-
-@jax.jit
-@qml.qnode(dev, interface="jax", diff_method="backprop")
-def model(weights, x):
-    """Quantum circuit."""
-    input_prep()
-    depth = weights.shape[1]
-    qml.RY(weights[0][0][0], wires=0)
-    for layer in range(1, depth):
-        for feature_n in range(x.shape[0]):
-            qml.RZ(weights[layer][feature_n][0] + x[feature_n], wires=0)
-            qml.RY(weights[layer][feature_n][1], wires=0)
-
-    return qml.expval(qml.PauliZ(wires=0))
-
-
-def criterion(weights, x, labels, model):
-    """Loss function."""
-    logits = model(weights, x)
-    # print(logits.shape, labels.shape)
-    loss = optax.softmax_cross_entropy(logits, labels)
-    return loss
-
-
-def optimise_model(
+def training_loop(
     model,
+    weights,
     criterion,
     nstep=100,
     lr=0.01,
-    depth=3,
     log_metrics=1,
     seed=42,
-    vmap=False,
     train_frac=1.0,
     evaluation_metrics=None,
 ):
@@ -93,6 +29,7 @@ def optimise_model(
 
     Args:
         model (qnode): Quantum circuit.
+        weights (jnp.ndarray): Initial weights.
         criterion (func): Loss function.
         nstep (int, optional):
             Number of steps / epochs. Defaults to 100.
@@ -102,10 +39,8 @@ def optimise_model(
             Depth of the circuit. Defaults to 3.
         seed (int, optional):
             Random seed. Defaults to 42.
-        vmap (bool, optional):
-            Whether to parallelise the model. Defaults to False.
         train_frac (float, optional):
-            Fraction of training data to use (not stratified).
+            Fraction of training data to use (not stratified). Should be in range [0., 1.].
             Defaults to 1.0.
         evaluation_metrics (dict, optional):
             Dictionary of evaluation metrics for logging with each
@@ -117,9 +52,12 @@ def optimise_model(
     """
 
     # Load data.
-    X_train, X_test, y_train, y_test = train_test_data(seed=seed)
-    X_train = jnp.asarray(X_train[: int(X_train.shape[0] * train_frac)])
-    y_train = jnp.asarray(y_train[: int(y_train.shape[0] * train_frac)])
+    assert train_frac <= 1.0, "train_frac must be <= 1.0"
+    X_train, X_test, y_train, y_test = model_utils.train_test_data(
+        train_size=train_frac * 0.8, seed=seed
+    )
+    X_train = jnp.asarray(X_train[: int(X_train.shape[0])])
+    y_train = jnp.asarray(y_train[: int(y_train.shape[0])])
     X_test = jnp.asarray(X_test)
     y_test = jnp.asarray(y_test)
 
@@ -127,29 +65,14 @@ def optimise_model(
     metrics = {
         "epoch": [],
         "loss": [],
-        "depth": [depth for _ in range(nstep)],
-        "training samples": [train_frac for _ in range(nstep)],
-        "seed": [seed for _ in range(nstep)],
     }
     if evaluation_metrics:
         for name in evaluation_metrics.keys():
             metrics[name] = []
 
-    # Initialise weights.
-    weights = jax.random.uniform(
-        jax.random.PRNGKey(seed),
-        shape=(depth + 1, X_train.shape[-1], 2),
-        minval=0.0,
-        maxval=2 * np.pi,
-    )
-
     # Initialise optimizer.
     optimizer = optax.adam(learning_rate=lr)
     opt_state = optimizer.init(weights)
-
-    # Parallelise the model.
-    if vmap:
-        model = jax.vmap(model, in_axes=(None, 1))
 
     # Train the model.
     steps = tqdm(range(nstep))
@@ -183,59 +106,86 @@ def optimise_model(
     return weights, pd.DataFrame.from_dict(metrics)
 
 
-evaluation_metrics = {
-    "Accuracy": sklearn.metrics.accuracy_score,
-    "AUC": sklearn.metrics.roc_auc_score,
-    "F1Score": sklearn.metrics.f1_score,
-    "Precision": sklearn.metrics.precision_score,
-    "Recall": sklearn.metrics.recall_score,
-}
+def configure_model(
+    model_name, vmapped=False, seed=None, n_layers=3, n_features=8, n_qubits=8
+):
+    if model_name == "QUAM":
+        shape = (n_layers + 1, n_features, 2)
+        import models.quam as model_module
+    elif model_name == "QAOA":
+        shape = [n_layers, n_qubits]
+        import models.qaoa as model_module
+    else:
+        raise NotImplementedError
+
+    model = model_module.model
+    if vmapped:
+        model = jax.vmap(model, in_axes=(None, 1))
+    weights = model_module.init_weights(shape, seed=seed)
+    criterion = model_module.criterion
+
+    return model, weights, criterion
 
 
-def sweep_train():
-    for seed in range(0, 5):
-        for idx, depth in enumerate(range(1, 10)):
-            for train_frac in np.linspace(0.5, 1.0, 3, endpoint=True):
-                weights, df = optimise_model(
-                    model,
-                    criterion,
-                    nstep=1000,
-                    lr=0.01,
-                    depth=depth,
-                    log_metrics=1,
-                    seed=seed,
-                    vmap=True,
-                    train_frac=train_frac,
-                    evaluation_metrics=evaluation_metrics,
-                )
-                if idx == 0 and seed == 0:
-                    df_all = df
-                    sweep_weights = [weights]
-                else:
-                    df_all = pd.concat([df_all, df])
-                    sweep_weights.append(np.asarray(weights))
+def quick_train(model_name, vmapped=False, seed=42):
+    model, weights, criterion = configure_model(
+        model_name, vmapped=vmapped, seed=seed, n_layers=3, n_features=8
+    )
 
-    df_all.to_csv(f"results/quam_sweep_metrics.csv")
-    np.save(f"results/quam_sweep_weights.npy", np.concatenate(sweep_weights, axis=0))
-
-
-def quick_train():
-    weights, metrics = optimise_model(
+    weights, metrics = training_loop(
         model,
+        weights,
         criterion,
         nstep=100,
         lr=0.01,
-        depth=9,
         log_metrics=1,
-        seed=42,
-        vmap=True,
+        seed=seed,
         train_frac=1.0,
-        evaluation_metrics=evaluation_metrics,
+        evaluation_metrics=model_utils.evaluation_metrics,
     )
 
-    metrics.to_csv("results/quam_quick_metrics.csv")
-    np.save("results/quam_quick_weights.npy", weights)
+    metrics.to_csv(f"results/{model_name.lower()}_quick_metrics.csv")
+    np.save(f"results/{model_name.lower()}_quick_weights.npy", weights)
+
+
+def sweep_train(model_name, vmapped=False, seed=42):
+    initialised = False
+    for seed in range(0, 5):
+        for idx, depth in enumerate(range(1, 10)):
+            for train_frac in np.linspace(0.5, 1.0, 3, endpoint=True):
+                model, weights, criterion = configure_model(
+                    model_name, vmapped=vmapped, seed=seed, n_layers=depth, n_features=8
+                )
+                weights, df = training_loop(
+                    model,
+                    weights,
+                    criterion,
+                    nstep=1000,
+                    lr=0.01,
+                    log_metrics=1,
+                    seed=seed,
+                    train_frac=train_frac,
+                    evaluation_metrics=model_utils.evaluation_metrics,
+                )
+                if initialised:
+                    df_all = pd.concat([df_all, df])
+                    sweep_weights.append(np.asarray(weights))
+                else:
+                    df_all = df
+                    sweep_weights = [weights]
+                    initialised = True
+
+    df_all.to_csv(f"results/{model_name.lower()}_sweep_metrics.csv")
+    np.save(
+        f"results/{model_name.lower()}_sweep_weights.npy",
+        np.concatenate(sweep_weights, axis=0),
+    )
 
 
 if __name__ == "__main__":
-    sweep_train()
+    # sweep_train("QUAM", vmapped=False, seed=42)
+    # import timeit
+    # timeit.timeit(lambda: quick_train("QUAM", vmapped=False, seed=42), number=3)
+    # timeit.timeit(lambda: quick_train("QUAM", vmapped=True, seed=42), number=3)
+    quick_train("QUAM", vmapped=True, seed=42)
+    # quick_train("QAOA", vmapped=False, seed=42)
