@@ -1,11 +1,7 @@
-# Adapted from: https://pennylane.ai/qml/demos/tutorial_contextuality/
-# And recreating equivalent model to Kordzanganeh+2021: https://arxiv.org/abs/2112.02655
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
-
 import jax
 import jax.numpy as jnp
+import pandas as pd
+from tqdm import tqdm
 import optax
 
 
@@ -98,12 +94,70 @@ def training_loop(
             if evaluation_metrics:
                 y_pred = jnp.where(model(weights, X_test.T) > 0.5, 1, 0)
                 for name, func in evaluation_metrics.items():
-                    metrics[name].append(func(y_pred, y_test))
+                    if jnp.unique(y_pred).shape[0] == 1 and name == "AUC":
+                        metrics[name].append(0.0)
+                    else:
+                        metrics[name].append(func(y_pred, y_test))
 
             metrics["epoch"].append(step)
             metrics["loss"].append(float(loss))
 
     return weights, pd.DataFrame.from_dict(metrics)
+
+
+def quick_train(model_name, vmapped=False, seed=42):
+    model, weights, criterion = configure_model(
+        model_name, vmapped=vmapped, seed=seed, n_layers=3, n_features=8
+    )
+
+    weights, metrics = training_loop(
+        model,
+        weights,
+        criterion,
+        nstep=100,
+        lr=0.01,
+        log_metrics=1,
+        seed=seed,
+        train_frac=1.0,
+        evaluation_metrics=model_utils.evaluation_metrics,
+    )
+
+    metrics.to_csv(f"results/{model_name.lower()}_quick_metrics.csv")
+    jnp.save(f"results/{model_name.lower()}_quick_weights.npy", weights)
+
+
+def sweep_train(model_name, vmapped=False, seed=42):
+    initialised = False
+    for seed in range(0, 5):
+        for idx, depth in enumerate(range(1, 10)):
+            for train_frac in jnp.linspace(0.5, 1.0, 3, endpoint=True):
+                model, weights, criterion = configure_model(
+                    model_name, vmapped=vmapped, seed=seed, n_layers=depth, n_features=8
+                )
+                weights, df = training_loop(
+                    model,
+                    weights,
+                    criterion,
+                    nstep=1000,
+                    lr=0.01,
+                    log_metrics=1,
+                    seed=seed,
+                    train_frac=train_frac,
+                    evaluation_metrics=model_utils.evaluation_metrics,
+                )
+                if initialised:
+                    df_all = pd.concat([df_all, df])
+                    sweep_weights.append(jnp.asarray(weights))
+                else:
+                    df_all = df
+                    sweep_weights = [weights]
+                    initialised = True
+
+    df_all.to_csv(f"results/{model_name.lower()}_sweep_metrics.csv")
+    jnp.save(
+        f"results/{model_name.lower()}_sweep_weights.npy",
+        jnp.concatenate(sweep_weights, axis=0),
+    )
 
 
 def configure_model(
@@ -127,65 +181,11 @@ def configure_model(
     return model, weights, criterion
 
 
-def quick_train(model_name, vmapped=False, seed=42):
-    model, weights, criterion = configure_model(
-        model_name, vmapped=vmapped, seed=seed, n_layers=3, n_features=8
-    )
-
-    weights, metrics = training_loop(
-        model,
-        weights,
-        criterion,
-        nstep=100,
-        lr=0.01,
-        log_metrics=1,
-        seed=seed,
-        train_frac=1.0,
-        evaluation_metrics=model_utils.evaluation_metrics,
-    )
-
-    metrics.to_csv(f"results/{model_name.lower()}_quick_metrics.csv")
-    np.save(f"results/{model_name.lower()}_quick_weights.npy", weights)
-
-
-def sweep_train(model_name, vmapped=False, seed=42):
-    initialised = False
-    for seed in range(0, 5):
-        for idx, depth in enumerate(range(1, 10)):
-            for train_frac in np.linspace(0.5, 1.0, 3, endpoint=True):
-                model, weights, criterion = configure_model(
-                    model_name, vmapped=vmapped, seed=seed, n_layers=depth, n_features=8
-                )
-                weights, df = training_loop(
-                    model,
-                    weights,
-                    criterion,
-                    nstep=1000,
-                    lr=0.01,
-                    log_metrics=1,
-                    seed=seed,
-                    train_frac=train_frac,
-                    evaluation_metrics=model_utils.evaluation_metrics,
-                )
-                if initialised:
-                    df_all = pd.concat([df_all, df])
-                    sweep_weights.append(np.asarray(weights))
-                else:
-                    df_all = df
-                    sweep_weights = [weights]
-                    initialised = True
-
-    df_all.to_csv(f"results/{model_name.lower()}_sweep_metrics.csv")
-    np.save(
-        f"results/{model_name.lower()}_sweep_weights.npy",
-        np.concatenate(sweep_weights, axis=0),
-    )
-
-
 if __name__ == "__main__":
-    # sweep_train("QUAM", vmapped=False, seed=42)
+    # quick_train("QUAM", vmapped=True, seed=42)
+    # TODO: Allow vmap to be off.
+    quick_train("QAOA", vmapped=True, seed=42)
+
     # import timeit
     # timeit.timeit(lambda: quick_train("QUAM", vmapped=False, seed=42), number=3)
     # timeit.timeit(lambda: quick_train("QUAM", vmapped=True, seed=42), number=3)
-    quick_train("QUAM", vmapped=True, seed=42)
-    # quick_train("QAOA", vmapped=False, seed=42)
