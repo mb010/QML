@@ -11,6 +11,6 @@ Digital asset produced during Micah Bowles' QML research placement with DiRAC an
 
 | Model | Accuracy | Recall | Reference |
 |-------|----------|--------|-----------|
-| QUAM | TBD | TBD | K21 |
-| QOAO | TBD | TBD | K21 |
+| [QUAM](models/quam.py) | TBD | TBD | K21 |
+| [QAOA](models/qaoa.py) | TBD | TBD | K21 |
 | TBD | TBD | TBD | K21 |
