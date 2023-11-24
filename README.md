@@ -3,6 +3,7 @@ Digital asset produced during Micah Bowles' QML research placement with DiRAC an
 
 # References:
 
+- [Sarma+19](https://arxiv.org/abs/1909.04226) (S19)
 - [Kordzanganeh+21](https://arxiv.org/abs/2112.02655) (K21)
 - [Thomas+23](https://ui.adsabs.harvard.edu/abs/2023arXiv231012084B/abstract) (T23)
 - [Donovan+23](https://ui.adsabs.harvard.edu/abs/2023arXiv230915592S/abstract) (D23)
